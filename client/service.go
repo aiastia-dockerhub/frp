@@ -19,7 +19,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"runtime"
 	"strconv"
@@ -36,6 +36,7 @@ import (
 	frpNet "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/version"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	libdial "github.com/fatedier/golib/net/dial"
 
 	fmux "github.com/hashicorp/yamux"
 )
@@ -124,13 +125,10 @@ func (svr *Service) Run() error {
 
 	if svr.cfg.AdminPort != 0 {
 		// Init admin server assets
-		err := assets.Load(svr.cfg.AssetsDir)
-		if err != nil {
-			return fmt.Errorf("Load assets error: %v", err)
-		}
+		assets.Load(svr.cfg.AssetsDir)
 
 		address := net.JoinHostPort(svr.cfg.AdminAddr, strconv.Itoa(svr.cfg.AdminPort))
-		err = svr.RunAdminServer(address)
+		err := svr.RunAdminServer(address)
 		if err != nil {
 			log.Warn("run admin server error: %v", err)
 		}
@@ -231,8 +229,33 @@ func (svr *Service) login() (conn net.Conn, session *fmux.Session, err error) {
 		}
 	}
 
-	address := net.JoinHostPort(svr.cfg.ServerAddr, strconv.Itoa(svr.cfg.ServerPort))
-	conn, err = frpNet.ConnectServerByProxyWithTLS(svr.cfg.HTTPProxy, svr.cfg.Protocol, address, tlsConfig)
+	proxyType, addr, auth, err := libdial.ParseProxyURL(svr.cfg.HTTPProxy)
+	if err != nil {
+		xl.Error("fail to parse proxy url")
+		return
+	}
+	dialOptions := []libdial.DialOption{}
+	protocol := svr.cfg.Protocol
+	if protocol == "websocket" {
+		protocol = "tcp"
+		dialOptions = append(dialOptions, libdial.WithAfterHook(libdial.AfterHook{Hook: frpNet.DialHookWebsocket()}))
+	}
+	if svr.cfg.ConnectServerLocalIP != "" {
+		dialOptions = append(dialOptions, libdial.WithLocalAddr(svr.cfg.ConnectServerLocalIP))
+	}
+	dialOptions = append(dialOptions,
+		libdial.WithProtocol(protocol),
+		libdial.WithProxy(proxyType, addr),
+		libdial.WithProxyAuth(auth),
+		libdial.WithTLSConfig(tlsConfig),
+		libdial.WithAfterHook(libdial.AfterHook{
+			Hook: frpNet.DialHookCustomTLSHeadByte(tlsConfig != nil, svr.cfg.DisableCustomTLSFirstByte),
+		}),
+	)
+	conn, err = libdial.Dial(
+		net.JoinHostPort(svr.cfg.ServerAddr, strconv.Itoa(svr.cfg.ServerPort)),
+		dialOptions...,
+	)
 	if err != nil {
 		return
 	}
@@ -248,8 +271,8 @@ func (svr *Service) login() (conn net.Conn, session *fmux.Session, err error) {
 
 	if svr.cfg.TCPMux {
 		fmuxCfg := fmux.DefaultConfig()
-		fmuxCfg.KeepAliveInterval = 20 * time.Second
-		fmuxCfg.LogOutput = ioutil.Discard
+		fmuxCfg.KeepAliveInterval = time.Duration(svr.cfg.TCPMuxKeepaliveInterval) * time.Second
+		fmuxCfg.LogOutput = io.Discard
 		session, err = fmux.Client(conn, fmuxCfg)
 		if err != nil {
 			return
@@ -315,9 +338,13 @@ func (svr *Service) ReloadConf(pxyCfgs map[string]config.ProxyConf, visitorCfgs 
 }
 
 func (svr *Service) Close() {
+	svr.GracefulClose(time.Duration(0))
+}
+
+func (svr *Service) GracefulClose(d time.Duration) {
 	atomic.StoreUint32(&svr.exit, 1)
 	if svr.ctl != nil {
-		svr.ctl.Close()
+		svr.ctl.GracefulClose(d)
 	}
 	svr.cancel()
 }

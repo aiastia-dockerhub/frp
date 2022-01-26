@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"strconv"
 	"strings"
@@ -36,6 +35,7 @@ import (
 
 	"github.com/fatedier/golib/errors"
 	frpIo "github.com/fatedier/golib/io"
+	libdial "github.com/fatedier/golib/net/dial"
 	"github.com/fatedier/golib/pool"
 	fmux "github.com/hashicorp/yamux"
 	pp "github.com/pires/go-proxyproto"
@@ -401,7 +401,7 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, m *msg.StartWorkConn) {
 
 	fmuxCfg := fmux.DefaultConfig()
 	fmuxCfg.KeepAliveInterval = 5 * time.Second
-	fmuxCfg.LogOutput = ioutil.Discard
+	fmuxCfg.LogOutput = io.Discard
 	sess, err := fmux.Server(kcpConn, fmuxCfg)
 	if err != nil {
 		xl.Error("create yamux server from kcp connection error: %v", err)
@@ -757,12 +757,12 @@ func HandleTCPWorkConnection(ctx context.Context, localInfo *config.LocalSvrConf
 			if m.DstAddr == "" {
 				m.DstAddr = "127.0.0.1"
 			}
+			srcAddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(m.SrcAddr, strconv.Itoa(int(m.SrcPort))))
+			dstAddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(m.DstAddr, strconv.Itoa(int(m.DstPort))))
 			h := &pp.Header{
-				Command:            pp.PROXY,
-				SourceAddress:      net.ParseIP(m.SrcAddr),
-				SourcePort:         m.SrcPort,
-				DestinationAddress: net.ParseIP(m.DstAddr),
-				DestinationPort:    m.DstPort,
+				Command:         pp.PROXY,
+				SourceAddr:      srcAddr,
+				DestinationAddr: dstAddr,
 			}
 
 			if strings.Contains(m.SrcAddr, ".") {
@@ -791,7 +791,7 @@ func HandleTCPWorkConnection(ctx context.Context, localInfo *config.LocalSvrConf
 		return
 	}
 
-	localConn, err := frpNet.ConnectServer("tcp", fmt.Sprintf("%s:%d", localInfo.LocalIP, localInfo.LocalPort))
+	localConn, err := libdial.Dial(net.JoinHostPort(localInfo.LocalIP, strconv.Itoa(localInfo.LocalPort)))
 	if err != nil {
 		workConn.Close()
 		xl.Error("connect to local service [%s:%d] error: %v", localInfo.LocalIP, localInfo.LocalPort, err)

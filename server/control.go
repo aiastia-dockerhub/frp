@@ -248,12 +248,10 @@ func (ctl *Control) GetWorkConn() (workConn net.Conn, err error) {
 		xl.Debug("get work connection from pool")
 	default:
 		// no work connections available in the poll, send message to frpc to get more
-		err = errors.PanicToError(func() {
+		if err = errors.PanicToError(func() {
 			ctl.sendCh <- &msg.ReqWorkConn{}
-		})
-		if err != nil {
-			xl.Error("%v", err)
-			return
+		}); err != nil {
+			return nil, fmt.Errorf("control is already closed")
 		}
 
 		select {
@@ -357,14 +355,14 @@ func (ctl *Control) stoper() {
 
 	ctl.allShutdown.WaitStart()
 
+	ctl.conn.Close()
+	ctl.readerShutdown.WaitDone()
+
 	close(ctl.readCh)
 	ctl.managerShutdown.WaitDone()
 
 	close(ctl.sendCh)
 	ctl.writerShutdown.WaitDone()
-
-	ctl.conn.Close()
-	ctl.readerShutdown.WaitDone()
 
 	ctl.mu.Lock()
 	defer ctl.mu.Unlock()
@@ -402,12 +400,19 @@ func (ctl *Control) manager() {
 	defer ctl.allShutdown.Start()
 	defer ctl.managerShutdown.Done()
 
-	heartbeat := time.NewTicker(time.Second)
-	defer heartbeat.Stop()
+	var heartbeatCh <-chan time.Time
+	if ctl.serverCfg.TCPMux || ctl.serverCfg.HeartbeatTimeout <= 0 {
+		// Don't need application heartbeat here.
+		// yamux will do same thing.
+	} else {
+		heartbeat := time.NewTicker(time.Second)
+		defer heartbeat.Stop()
+		heartbeatCh = heartbeat.C
+	}
 
 	for {
 		select {
-		case <-heartbeat.C:
+		case <-heartbeatCh:
 			if time.Since(ctl.lastPing) > time.Duration(ctl.serverCfg.HeartbeatTimeout)*time.Second {
 				xl.Warn("heartbeat timeout")
 				return
