@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,7 +13,7 @@ import (
 	"time"
 
 	"github.com/fatedier/frp/test/e2e/pkg/rpc"
-	libnet "github.com/fatedier/golib/net"
+	libdial "github.com/fatedier/golib/net/dial"
 )
 
 type Request struct {
@@ -142,7 +141,11 @@ func (r *Request) Do() (*Response, error) {
 		if r.protocol != "tcp" {
 			return nil, fmt.Errorf("only tcp protocol is allowed for proxy")
 		}
-		conn, err = libnet.DialTcpByProxy(r.proxyURL, addr)
+		proxyType, proxyAddress, auth, err := libdial.ParseProxyURL(r.proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse ProxyURL error: %v", err)
+		}
+		conn, err = libdial.Dial(addr, libdial.WithProxy(proxyType, proxyAddress), libdial.WithProxyAuth(auth))
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +222,7 @@ func (r *Request) sendHTTPRequest(method, urlstr string, host string, headers ma
 	}
 
 	ret := &Response{Code: resp.StatusCode, Header: resp.Header}
-	buf, err := ioutil.ReadAll(resp.Body)
+	buf, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
