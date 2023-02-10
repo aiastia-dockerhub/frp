@@ -47,6 +47,7 @@ import (
 
 func init() {
 	crypto.DefaultSalt = "frp"
+	// TODO: remove this when we drop support for go1.19
 	rand.Seed(time.Now().UnixNano())
 }
 
