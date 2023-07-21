@@ -1,4 +1,3 @@
-
 # frp
 
 [![Build Status](https://circleci.com/gh/fatedier/frp.svg?style=shield)](https://circleci.com/gh/fatedier/frp)
@@ -12,12 +11,7 @@
   <a href="https://workos.com/?utm_campaign=github_repo&utm_medium=referral&utm_content=frp&utm_source=github" target="_blank">
     <img width="350px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_workos.png">
   </a>
-  <a>&nbsp</a>
-  <a href="https://asocks.com/c/vDu6Dk" target="_blank">
-    <img width="350px" src="https://raw.githubusercontent.com/fatedier/frp/dev/doc/pic/sponsor_asocks.jpg">
-  </a>
 </p>
-
 <!--gold sponsors end-->
 
 ## What is frp?
@@ -31,9 +25,11 @@ frp also offers a P2P connect mode.
 <!-- vim-markdown-toc GFM -->
 
 * [Development Status](#development-status)
+    * [About V2](#about-v2)
 * [Architecture](#architecture)
 * [Example Usage](#example-usage)
     * [Access your computer in a LAN network via SSH](#access-your-computer-in-a-lan-network-via-ssh)
+    * [Multiple SSH services sharing the same port](#multiple-ssh-services-sharing-the-same-port)
     * [Accessing Internal Web Services with Custom Domains in LAN](#accessing-internal-web-services-with-custom-domains-in-lan)
     * [Forward DNS query requests](#forward-dns-query-requests)
     * [Forward Unix Domain Socket](#forward-unix-domain-socket)
@@ -95,6 +91,20 @@ We are currently working on version 2 and attempting to perform some code refact
 
 We will transition from version 0 to version 1 at the appropriate time and will only accept bug fixes and improvements, rather than big feature requests.
 
+### About V2
+
+The overall situation is currently unfavorable, and there is significant pressure in both personal and professional aspects.
+
+The complexity and difficulty of the v2 version are much higher than anticipated. I can only work on its development during fragmented time periods, and the constant interruptions disrupt productivity significantly. Given this situation, we will continue to optimize and iterate on the current version until we have more free time to proceed with the major version overhaul.
+
+The concept behind v2 is based on my years of experience and reflection in the cloud-native domain, particularly in K8s and ServiceMesh. Its core is a modernized four-layer and seven-layer proxy, similar to envoy. This proxy itself is highly scalable, not only capable of implementing the functionality of intranet penetration but also applicable to various other domains. Building upon this highly scalable core, we aim to implement all the capabilities of frp v1 while also addressing the functionalities that were previously unachievable or difficult to implement in an elegant manner. Furthermore, we will maintain efficient development and iteration capabilities.
+
+In addition, I envision frp itself becoming a highly extensible system and platform, similar to how we can provide a range of extension capabilities based on K8s. In K8s, we can customize development according to enterprise needs, utilizing features such as CRD, controller mode, webhook, CSI, and CNI. In frp v1, we introduced the concept of server plugins, which implemented some basic extensibility. However, it relies on a simple HTTP protocol and requires users to start independent processes and manage them on their own. This approach is far from flexible and convenient, and real-world demands vary greatly. It is unrealistic to expect a non-profit open-source project maintained by a few individuals to meet everyone's needs.
+
+Finally, we acknowledge that the current design of modules such as configuration management, permission verification, certificate management, and API management is not modern enough. While we may carry out some optimizations in the v1 version, ensuring compatibility remains a challenging issue that requires a considerable amount of effort to address.
+
+We sincerely appreciate your support for frp.
+
 ## Architecture
 
 ![architecture](/doc/pic/architecture.png)
@@ -146,6 +156,56 @@ Note that the `local_port` (listened on the client) and `remote_port` (exposed o
 
   `ssh -oPort=6000 test@x.x.x.x`
 
+### Multiple SSH services sharing the same port
+
+This example implements multiple SSH services exposed through the same port using a proxy of type tcpmux. Similarly, as long as the client supports the HTTP Connect proxy connection method, port reuse can be achieved in this way.
+
+1. Deploy frps on a machine with a public IP and modify the frps.ini file. Here is a simplified configuration:
+
+  ```ini
+  [common]
+  bind_port = 7000
+  tcpmux_httpconnect_port = 5002
+  ```
+
+2. Deploy frpc on the internal machine A with the following configuration:
+
+  ```ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [ssh1]
+  type = tcpmux
+  multiplexer = httpconnect
+  custom_domains = machine-a.example.com
+  local_ip = 127.0.0.1
+  local_port = 22
+  ```
+
+3. Deploy another frpc on the internal machine B with the following configuration:
+
+  ```ini
+  [common]
+  server_addr = x.x.x.x
+  server_port = 7000
+
+  [ssh2]
+  type = tcpmux
+  multiplexer = httpconnect
+  custom_domains = machine-b.example.com
+  local_ip = 127.0.0.1
+  local_port = 22
+  ```
+
+4. To access internal machine A using SSH ProxyCommand, assuming the username is "test":
+
+  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:machine-a.example.com:22,proxyport=5002' test@machine-a`
+
+5. To access internal machine B, the only difference is the domain name, assuming the username is "test":
+
+  `ssh -o 'proxycommand socat - PROXY:x.x.x.x:machine-b.example.com:22,proxyport=5002' test@machine-b`
+
 ### Accessing Internal Web Services with Custom Domains in LAN
 
 Sometimes we need to expose a local web service behind a NAT network to others for testing purposes with our own domain name.
@@ -160,6 +220,8 @@ Unfortunately, we cannot resolve a domain name to a local IP. However, we can us
   bind_port = 7000
   vhost_http_port = 8080
   ```
+
+  If you want to configure an https proxy, you need to set up the `vhost_https_port`.
 
 2. Start `frps`:
 
@@ -286,6 +348,7 @@ You may substitute `https2https` for the plugin, and point the `plugin_local_add
   [common]
   server_addr = x.x.x.x
   server_port = 7000
+  vhost_https_port = 443
 
   [test_https2http]
   type = https
@@ -349,20 +412,15 @@ Configure `frps` same as above.
 
 Note that it may not work with all types of NAT devices. You might want to fallback to stcp if xtcp doesn't work.
 
-1. In `frps.ini` configure a UDP port for xtcp:
-
-  ```ini
-  # frps.ini
-  bind_udp_port = 7001
-  ```
-
-2. Start `frpc` on machine B, and expose the SSH port. Note that the `remote_port` field is removed:
+1. Start `frpc` on machine B, and expose the SSH port. Note that the `remote_port` field is removed:
 
   ```ini
   # frpc.ini
   [common]
   server_addr = x.x.x.x
   server_port = 7000
+  # set up a new stun server if the default one is not available.
+  # nat_hole_stun_server = xxx
 
   [p2p_ssh]
   type = xtcp
@@ -371,13 +429,15 @@ Note that it may not work with all types of NAT devices. You might want to fallb
   local_port = 22
   ```
 
-3. Start another `frpc` (typically on another machine C) with the configuration to connect to SSH using P2P mode:
+2. Start another `frpc` (typically on another machine C) with the configuration to connect to SSH using P2P mode:
 
   ```ini
   # frpc.ini
   [common]
   server_addr = x.x.x.x
   server_port = 7000
+  # set up a new stun server if the default one is not available.
+  # nat_hole_stun_server = xxx
 
   [p2p_ssh_visitor]
   type = xtcp
@@ -386,9 +446,11 @@ Note that it may not work with all types of NAT devices. You might want to fallb
   sk = abcdefg
   bind_addr = 127.0.0.1
   bind_port = 6000
+  # when automatic tunnel persistence is required, set it to true
+  keep_tunnel_open = false
   ```
 
-4. On machine C, connect to SSH on machine B, using this command:
+3. On machine C, connect to SSH on machine B, using this command:
 
   `ssh -oPort=6000 127.0.0.1`
 
@@ -569,11 +631,9 @@ use_compression = true
 
 #### TLS
 
-frp supports the TLS protocol between `frpc` and `frps` since v0.25.0.
+Since v0.50.0, the default value of `tls_enable` and `disable_custom_tls_first_byte` has been changed to true, and tls is enabled by default.
 
-For port multiplexing, frp sends a first byte `0x17` to dial a TLS connection.
-
-Configure `tls_enable = true` in the `[common]` section to `frpc.ini` to enable this feature.
+For port multiplexing, frp sends a first byte `0x17` to dial a TLS connection. This only takes effect when you set `disable_custom_tls_first_byte` to false.
 
 To **enforce** `frps` to only accept TLS connections - configure `tls_only = true` in the `[common]` section in `frps.ini`. **This is optional.**
 
@@ -588,7 +648,6 @@ tls_trusted_ca_file = ca.crt
 **`frps` TLS settings (under the `[common]` section):**
 ```ini
 tls_only = true
-tls_enable = true
 tls_cert_file = certificate.crt
 tls_key_file = certificate.key
 tls_trusted_ca_file = ca.crt

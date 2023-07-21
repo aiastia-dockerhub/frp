@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -39,7 +40,6 @@ var (
 
 	bindAddr             string
 	bindPort             int
-	bindUDPPort          int
 	kcpBindPort          int
 	proxyBindAddr        string
 	vhostHTTPPort        int
@@ -70,7 +70,6 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVarP(&bindAddr, "bind_addr", "", "0.0.0.0", "bind address")
 	rootCmd.PersistentFlags().IntVarP(&bindPort, "bind_port", "p", 7000, "bind port")
-	rootCmd.PersistentFlags().IntVarP(&bindUDPPort, "bind_udp_port", "", 0, "bind udp port")
 	rootCmd.PersistentFlags().IntVarP(&kcpBindPort, "kcp_bind_port", "", 0, "kcp bind udp port")
 	rootCmd.PersistentFlags().StringVarP(&proxyBindAddr, "proxy_bind_addr", "", "0.0.0.0", "proxy bind address")
 	rootCmd.PersistentFlags().IntVarP(&vhostHTTPPort, "vhost_http_port", "", 0, "vhost http port")
@@ -159,7 +158,6 @@ func parseServerCommonCfgFromCmd() (cfg config.ServerCommonConf, err error) {
 
 	cfg.BindAddr = bindAddr
 	cfg.BindPort = bindPort
-	cfg.BindUDPPort = bindUDPPort
 	cfg.KCPBindPort = kcpBindPort
 	cfg.ProxyBindAddr = proxyBindAddr
 	cfg.VhostHTTPPort = vhostHTTPPort
@@ -213,6 +211,6 @@ func runServer(cfg config.ServerCommonConf) (err error) {
 		return err
 	}
 	log.Info("frps started successfully")
-	svr.Run()
+	svr.Run(context.Background())
 	return
 }
