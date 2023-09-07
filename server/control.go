@@ -26,10 +26,11 @@ import (
 	"github.com/fatedier/golib/control/shutdown"
 	"github.com/fatedier/golib/crypto"
 	"github.com/fatedier/golib/errors"
+	"github.com/samber/lo"
 
 	"github.com/fatedier/frp/pkg/auth"
 	"github.com/fatedier/frp/pkg/config"
-	"github.com/fatedier/frp/pkg/consts"
+	v1 "github.com/fatedier/frp/pkg/config/v1"
 	pkgerr "github.com/fatedier/frp/pkg/errors"
 	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
@@ -55,13 +56,14 @@ func NewControlManager() *ControlManager {
 	}
 }
 
-func (cm *ControlManager) Add(runID string, ctl *Control) (oldCtl *Control) {
+func (cm *ControlManager) Add(runID string, ctl *Control) (old *Control) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	oldCtl, ok := cm.ctlsByRunID[runID]
+	var ok bool
+	old, ok = cm.ctlsByRunID[runID]
 	if ok {
-		oldCtl.Replaced(ctl)
+		old.Replaced(ctl)
 	}
 	cm.ctlsByRunID[runID] = ctl
 	return
@@ -141,18 +143,17 @@ type Control struct {
 	// replace old controller instantly.
 	runID string
 
-	// control status
-	status string
-
 	readerShutdown  *shutdown.Shutdown
 	writerShutdown  *shutdown.Shutdown
 	managerShutdown *shutdown.Shutdown
 	allShutdown     *shutdown.Shutdown
 
+	started bool
+
 	mu sync.RWMutex
 
 	// Server configuration information
-	serverCfg config.ServerCommonConf
+	serverCfg *v1.ServerConfig
 
 	xl  *xlog.Logger
 	ctx context.Context
@@ -166,11 +167,11 @@ func NewControl(
 	authVerifier auth.Verifier,
 	ctlConn net.Conn,
 	loginMsg *msg.Login,
-	serverCfg config.ServerCommonConf,
+	serverCfg *v1.ServerConfig,
 ) *Control {
 	poolCount := loginMsg.PoolCount
-	if poolCount > int(serverCfg.MaxPoolCount) {
-		poolCount = int(serverCfg.MaxPoolCount)
+	if poolCount > int(serverCfg.Transport.MaxPoolCount) {
+		poolCount = int(serverCfg.Transport.MaxPoolCount)
 	}
 	ctl := &Control{
 		rc:              rc,
@@ -187,7 +188,6 @@ func NewControl(
 		portsUsedNum:    0,
 		lastPing:        time.Now(),
 		runID:           loginMsg.RunID,
-		status:          consts.Working,
 		readerShutdown:  shutdown.New(),
 		writerShutdown:  shutdown.New(),
 		managerShutdown: shutdown.New(),
@@ -208,11 +208,19 @@ func (ctl *Control) Start() {
 		Error:   "",
 	}
 	_ = msg.WriteMsg(ctl.conn, loginRespMsg)
+	ctl.mu.Lock()
+	ctl.started = true
+	ctl.mu.Unlock()
 
 	go ctl.writer()
-	for i := 0; i < ctl.poolCount; i++ {
-		ctl.sendCh <- &msg.ReqWorkConn{}
-	}
+	go func() {
+		for i := 0; i < ctl.poolCount; i++ {
+			// ignore error here, that means that this control is closed
+			_ = errors.PanicToError(func() {
+				ctl.sendCh <- &msg.ReqWorkConn{}
+			})
+		}
+	}()
 
 	go ctl.manager()
 	go ctl.reader()
@@ -314,7 +322,7 @@ func (ctl *Control) writer() {
 	defer ctl.allShutdown.Start()
 	defer ctl.writerShutdown.Done()
 
-	encWriter, err := crypto.NewWriter(ctl.conn, []byte(ctl.serverCfg.Token))
+	encWriter, err := crypto.NewWriter(ctl.conn, []byte(ctl.serverCfg.Auth.Token))
 	if err != nil {
 		xl.Error("crypto new writer error: %v", err)
 		ctl.allShutdown.Start()
@@ -346,7 +354,7 @@ func (ctl *Control) reader() {
 	defer ctl.allShutdown.Start()
 	defer ctl.readerShutdown.Done()
 
-	encReader := crypto.NewReader(ctl.conn, []byte(ctl.serverCfg.Token))
+	encReader := crypto.NewReader(ctl.conn, []byte(ctl.serverCfg.Auth.Token))
 	for {
 		m, err := msg.ReadMsg(encReader)
 		if err != nil {
@@ -394,7 +402,7 @@ func (ctl *Control) stoper() {
 	for _, pxy := range ctl.proxies {
 		pxy.Close()
 		ctl.pxyManager.Del(pxy.GetName())
-		metrics.Server.CloseProxy(pxy.GetName(), pxy.GetConf().GetBaseConfig().ProxyType)
+		metrics.Server.CloseProxy(pxy.GetName(), pxy.GetConfigurer().GetBaseConfig().Type)
 
 		notifyContent := &plugin.CloseProxyContent{
 			User: plugin.UserInfo{
@@ -418,6 +426,14 @@ func (ctl *Control) stoper() {
 
 // block until Control closed
 func (ctl *Control) WaitClosed() {
+	ctl.mu.RLock()
+	started := ctl.started
+	ctl.mu.RUnlock()
+
+	if !started {
+		ctl.allShutdown.Done()
+		return
+	}
 	ctl.allShutdown.WaitDone()
 }
 
@@ -434,10 +450,9 @@ func (ctl *Control) manager() {
 	defer ctl.managerShutdown.Done()
 
 	var heartbeatCh <-chan time.Time
-	if ctl.serverCfg.TCPMux || ctl.serverCfg.HeartbeatTimeout <= 0 {
-		// Don't need application heartbeat here.
-		// yamux will do same thing.
-	} else {
+	// Don't need application heartbeat if TCPMux is enabled,
+	// yamux will do same thing.
+	if !lo.FromPtr(ctl.serverCfg.Transport.TCPMux) && ctl.serverCfg.Transport.HeartbeatTimeout > 0 {
 		heartbeat := time.NewTicker(time.Second)
 		defer heartbeat.Stop()
 		heartbeatCh = heartbeat.C
@@ -446,7 +461,7 @@ func (ctl *Control) manager() {
 	for {
 		select {
 		case <-heartbeatCh:
-			if time.Since(ctl.lastPing) > time.Duration(ctl.serverCfg.HeartbeatTimeout)*time.Second {
+			if time.Since(ctl.lastPing) > time.Duration(ctl.serverCfg.Transport.HeartbeatTimeout)*time.Second {
 				xl.Warn("heartbeat timeout")
 				return
 			}
@@ -478,7 +493,8 @@ func (ctl *Control) manager() {
 				}
 				if err != nil {
 					xl.Warn("new proxy [%s] type [%s] error: %v", m.ProxyName, m.ProxyType, err)
-					resp.Error = util.GenerateResponseErrorString(fmt.Sprintf("new proxy [%s] error", m.ProxyName), err, ctl.serverCfg.DetailedErrorsToClient)
+					resp.Error = util.GenerateResponseErrorString(fmt.Sprintf("new proxy [%s] error", m.ProxyName),
+						err, lo.FromPtr(ctl.serverCfg.DetailedErrorsToClient))
 				} else {
 					resp.RemoteAddr = remoteAddr
 					xl.Info("new proxy [%s] type [%s] success", m.ProxyName, m.ProxyType)
@@ -511,7 +527,7 @@ func (ctl *Control) manager() {
 				if err != nil {
 					xl.Warn("received invalid ping: %v", err)
 					ctl.sendCh <- &msg.Pong{
-						Error: util.GenerateResponseErrorString("invalid ping", err, ctl.serverCfg.DetailedErrorsToClient),
+						Error: util.GenerateResponseErrorString("invalid ping", err, lo.FromPtr(ctl.serverCfg.DetailedErrorsToClient)),
 					}
 					return
 				}
@@ -536,9 +552,9 @@ func (ctl *Control) HandleNatHoleReport(m *msg.NatHoleReport) {
 }
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
-	var pxyConf config.ProxyConf
+	var pxyConf v1.ProxyConfigurer
 	// Load configures from NewProxy message and validate.
-	pxyConf, err = config.NewProxyConfFromMsg(pxyMsg, ctl.serverCfg)
+	pxyConf, err = config.NewProxyConfigurerFromMsg(pxyMsg, ctl.serverCfg)
 	if err != nil {
 		return
 	}
@@ -619,7 +635,7 @@ func (ctl *Control) CloseProxy(closeMsg *msg.CloseProxy) (err error) {
 	delete(ctl.proxies, closeMsg.ProxyName)
 	ctl.mu.Unlock()
 
-	metrics.Server.CloseProxy(pxy.GetName(), pxy.GetConf().GetBaseConfig().ProxyType)
+	metrics.Server.CloseProxy(pxy.GetName(), pxy.GetConfigurer().GetBaseConfig().Type)
 
 	notifyContent := &plugin.CloseProxyContent{
 		User: plugin.UserInfo{
