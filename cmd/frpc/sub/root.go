@@ -117,6 +117,7 @@ var rootCmd = &cobra.Command{
 		// Do not show command usage here.
 		err := runClient(cfgFile)
 		if err != nil {
+			fmt.Println(err)
 			os.Exit(1)
 		}
 		return nil
@@ -186,7 +187,7 @@ func parseClientCommonCfgFromCmd() (*v1.ClientCommonConfig, error) {
 
 	cfg.Complete()
 
-	err, warning := validation.ValidateClientCommonConfig(cfg)
+	warning, err := validation.ValidateClientCommonConfig(cfg)
 	if warning != nil {
 		fmt.Printf("WARNING: %v\n", warning)
 	}
@@ -199,7 +200,6 @@ func parseClientCommonCfgFromCmd() (*v1.ClientCommonConfig, error) {
 func runClient(cfgFilePath string) error {
 	cfg, pxyCfgs, visitorCfgs, isLegacyFormat, err := config.LoadClientConfig(cfgFilePath)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	if isLegacyFormat {

@@ -35,7 +35,7 @@ type VisitorBaseConfig struct {
 	Name      string           `json:"name"`
 	Type      string           `json:"type"`
 	Transport VisitorTransport `json:"transport,omitempty"`
-	SecretKey string           `json:"sk,omitempty"`
+	SecretKey string           `json:"secretKey,omitempty"`
 	// if the server user is not set, it defaults to the current user
 	ServerUser string `json:"serverUser,omitempty"`
 	ServerName string `json:"serverName,omitempty"`
@@ -99,7 +99,7 @@ func (c *TypedVisitorConfig) UnmarshalJSON(b []byte) error {
 	c.Type = typeStruct.Type
 	configurer := NewVisitorConfigurerByType(typeStruct.Type)
 	if configurer == nil {
-		return fmt.Errorf("unknown visitor type: %s" + typeStruct.Type)
+		return fmt.Errorf("unknown visitor type: %s", typeStruct.Type)
 	}
 	if err := json.Unmarshal(b, configurer); err != nil {
 		return err
