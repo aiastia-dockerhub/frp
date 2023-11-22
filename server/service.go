@@ -37,6 +37,7 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/nathole"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
+	"github.com/fatedier/frp/pkg/ssh"
 	"github.com/fatedier/frp/pkg/transport"
 	"github.com/fatedier/frp/pkg/util/log"
 	utilnet "github.com/fatedier/frp/pkg/util/net"
@@ -78,6 +79,8 @@ type Service struct {
 	// Accept frp tls connections
 	tlsListener net.Listener
 
+	virtualListener *utilnet.InternalListener
+
 	// Manage all controllers
 	ctlManager *ControlManager
 
@@ -92,6 +95,8 @@ type Service struct {
 
 	// All resource managers and controllers
 	rc *controller.ResourceController
+
+	sshTunnelGateway *ssh.Gateway
 
 	// Verifies authentication based on selected method
 	authVerifier auth.Verifier
@@ -124,6 +129,7 @@ func NewService(cfg *v1.ServerConfig) (svr *Service, err error) {
 			TCPPortManager: ports.NewManager("tcp", cfg.ProxyBindAddr, cfg.AllowPorts),
 			UDPPortManager: ports.NewManager("udp", cfg.ProxyBindAddr, cfg.AllowPorts),
 		},
+		virtualListener: utilnet.NewInternalListener(),
 		httpVhostRouter: vhost.NewRouters(),
 		authVerifier:    auth.NewAuthVerifier(cfg.Auth),
 		tlsConfig:       tlsConfig,
@@ -223,7 +229,17 @@ func NewService(cfg *v1.ServerConfig) (svr *Service, err error) {
 			err = fmt.Errorf("listen on quic udp address %s error: %v", address, err)
 			return
 		}
-		log.Info("frps quic listen on quic %s", address)
+		log.Info("frps quic listen on %s", address)
+	}
+
+	if cfg.SSHTunnelGateway.BindPort > 0 {
+		sshGateway, err := ssh.NewGateway(cfg.SSHTunnelGateway, cfg.ProxyBindAddr, svr.virtualListener)
+		if err != nil {
+			err = fmt.Errorf("create ssh gateway error: %v", err)
+			return nil, err
+		}
+		svr.sshTunnelGateway = sshGateway
+		log.Info("frps sshTunnelGateway listen on port %d", cfg.SSHTunnelGateway.BindPort)
 	}
 
 	// Listen for accepting connections from client using websocket protocol.
@@ -326,19 +342,26 @@ func (svr *Service) Run(ctx context.Context) {
 	svr.ctx = ctx
 	svr.cancel = cancel
 
+	go svr.HandleListener(svr.virtualListener, true)
+
 	if svr.kcpListener != nil {
-		go svr.HandleListener(svr.kcpListener)
+		go svr.HandleListener(svr.kcpListener, false)
 	}
 	if svr.quicListener != nil {
 		go svr.HandleQUICListener(svr.quicListener)
 	}
-	go svr.HandleListener(svr.websocketListener)
-	go svr.HandleListener(svr.tlsListener)
+	go svr.HandleListener(svr.websocketListener, false)
+	go svr.HandleListener(svr.tlsListener, false)
 
 	if svr.rc.NatHoleController != nil {
 		go svr.rc.NatHoleController.CleanWorker(svr.ctx)
 	}
-	svr.HandleListener(svr.listener)
+
+	if svr.sshTunnelGateway != nil {
+		go svr.sshTunnelGateway.Run()
+	}
+
+	svr.HandleListener(svr.listener, false)
 
 	<-svr.ctx.Done()
 	// service context may not be canceled by svr.Close(), we should call it here to release resources
@@ -438,7 +461,7 @@ func (svr *Service) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func (svr *Service) HandleListener(l net.Listener) {
+func (svr *Service) HandleListener(l net.Listener, internal bool) {
 	// Listen for incoming connections from client.
 	for {
 		c, err := l.Accept()
@@ -454,8 +477,9 @@ func (svr *Service) HandleListener(l net.Listener) {
 
 		log.Trace("start check TLS connection...")
 		originConn := c
+		forceTLS := svr.cfg.Transport.TLS.Force && !internal
 		var isTLS, custom bool
-		c, isTLS, custom, err = utilnet.CheckAndEnableTLSServerConnWithTimeout(c, svr.tlsConfig, svr.cfg.Transport.TLS.Force, connReadTimeout)
+		c, isTLS, custom, err = utilnet.CheckAndEnableTLSServerConnWithTimeout(c, svr.tlsConfig, forceTLS, connReadTimeout)
 		if err != nil {
 			log.Warn("CheckAndEnableTLSServerConnWithTimeout error: %v", err)
 			originConn.Close()
@@ -465,7 +489,7 @@ func (svr *Service) HandleListener(l net.Listener) {
 
 		// Start a new goroutine to handle connection.
 		go func(ctx context.Context, frpConn net.Conn) {
-			if lo.FromPtr(svr.cfg.Transport.TCPMux) {
+			if lo.FromPtr(svr.cfg.Transport.TCPMux) && !internal {
 				fmuxCfg := fmux.DefaultConfig()
 				fmuxCfg.KeepAliveInterval = time.Duration(svr.cfg.Transport.TCPMuxKeepaliveInterval) * time.Second
 				fmuxCfg.LogOutput = io.Discard
@@ -543,7 +567,7 @@ func (svr *Service) RegisterControl(ctlConn net.Conn, loginMsg *msg.Login) error
 	if err != nil {
 		xl.Warn("create new controller error: %v", err)
 		// don't return detailed errors to client
-		return fmt.Errorf("unexpect error when creating new controller")
+		return fmt.Errorf("unexpected error when creating new controller")
 	}
 	if oldCtl := svr.ctlManager.Add(loginMsg.RunID, ctl); oldCtl != nil {
 		oldCtl.WaitClosed()
