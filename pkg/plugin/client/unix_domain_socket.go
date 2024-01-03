@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build !frps
+
 package plugin
 
 import (
@@ -46,13 +48,13 @@ func NewUnixDomainSocketPlugin(options v1.ClientPluginOptions) (p Plugin, err er
 	return
 }
 
-func (uds *UnixDomainSocketPlugin) Handle(conn io.ReadWriteCloser, _ net.Conn, extraBufToLocal []byte) {
+func (uds *UnixDomainSocketPlugin) Handle(conn io.ReadWriteCloser, _ net.Conn, extra *ExtraInfo) {
 	localConn, err := net.DialUnix("unix", nil, uds.UnixAddr)
 	if err != nil {
 		return
 	}
-	if len(extraBufToLocal) > 0 {
-		if _, err := localConn.Write(extraBufToLocal); err != nil {
+	if extra.ProxyProtocolHeader != nil {
+		if _, err := extra.ProxyProtocolHeader.WriteTo(localConn); err != nil {
 			return
 		}
 	}

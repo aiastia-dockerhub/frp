@@ -22,7 +22,7 @@ import (
 	"github.com/fatedier/golib/errors"
 
 	"github.com/fatedier/frp/pkg/util/log"
-	utilnet "github.com/fatedier/frp/pkg/util/net"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
 
@@ -46,6 +46,7 @@ type (
 	authFunc        func(conn net.Conn, username, password string, reqInfoMap map[string]string) (bool, error)
 	hostRewriteFunc func(net.Conn, string) (net.Conn, error)
 	successHookFunc func(net.Conn, map[string]string) error
+	failHookFunc    func(net.Conn)
 )
 
 // Muxer is a functional component used for https and tcpmux proxies.
@@ -58,6 +59,7 @@ type Muxer struct {
 	vhostFunc      muxFunc
 	checkAuth      authFunc
 	successHook    successHookFunc
+	failHook       failHookFunc
 	rewriteHost    hostRewriteFunc
 	registryRouter *Routers
 }
@@ -84,6 +86,11 @@ func (v *Muxer) SetCheckAuthFunc(f authFunc) *Muxer {
 
 func (v *Muxer) SetSuccessHookFunc(f successHookFunc) *Muxer {
 	v.successHook = f
+	return v
+}
+
+func (v *Muxer) SetFailHookFunc(f failHookFunc) *Muxer {
+	v.failHook = f
 	return v
 }
 
@@ -206,13 +213,8 @@ func (v *Muxer) handle(c net.Conn) {
 	httpUser := reqInfoMap["HTTPUser"]
 	l, ok := v.getListener(name, path, httpUser)
 	if !ok {
-		res := notFoundResponse()
-		if res.Body != nil {
-			defer res.Body.Close()
-		}
-		_ = res.Write(c)
 		log.Debug("http request for host [%s] path [%s] httpUser [%s] not found", name, path, httpUser)
-		_ = c.Close()
+		v.failHook(sConn)
 		return
 	}
 
@@ -282,7 +284,7 @@ func (l *Listener) Accept() (net.Conn, error) {
 		xl.Debug("rewrite host to [%s] success", l.rewriteHost)
 		conn = sConn
 	}
-	return utilnet.NewContextConn(l.ctx, conn), nil
+	return netpkg.NewContextConn(l.ctx, conn), nil
 }
 
 func (l *Listener) Close() error {

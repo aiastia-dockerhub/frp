@@ -15,6 +15,7 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,6 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/fatedier/frp/pkg/config/types"
-	"github.com/fatedier/frp/pkg/consts"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/util/util"
 )
@@ -174,11 +174,15 @@ func (c *TypedProxyConfig) UnmarshalJSON(b []byte) error {
 	}
 
 	c.Type = typeStruct.Type
-	configurer := NewProxyConfigurerByType(typeStruct.Type)
+	configurer := NewProxyConfigurerByType(ProxyType(typeStruct.Type))
 	if configurer == nil {
 		return fmt.Errorf("unknown proxy type: %s", typeStruct.Type)
 	}
-	if err := json.Unmarshal(b, configurer); err != nil {
+	decoder := json.NewDecoder(bytes.NewBuffer(b))
+	if DisallowUnknownFields {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(configurer); err != nil {
 		return err
 	}
 	c.ProxyConfigurer = configurer
@@ -191,28 +195,43 @@ type ProxyConfigurer interface {
 	// MarshalToMsg marshals this config into a msg.NewProxy message. This
 	// function will be called on the frpc side.
 	MarshalToMsg(*msg.NewProxy)
-	// UnmarshalFromMsg unmarshals a msg.NewProxy message into this config.
+	// UnmarshalFromMsg unmarshal a msg.NewProxy message into this config.
 	// This function will be called on the frps side.
 	UnmarshalFromMsg(*msg.NewProxy)
 }
 
-var proxyConfigTypeMap = map[string]reflect.Type{
-	consts.TCPProxy:    reflect.TypeOf(TCPProxyConfig{}),
-	consts.UDPProxy:    reflect.TypeOf(UDPProxyConfig{}),
-	consts.HTTPProxy:   reflect.TypeOf(HTTPProxyConfig{}),
-	consts.HTTPSProxy:  reflect.TypeOf(HTTPSProxyConfig{}),
-	consts.TCPMuxProxy: reflect.TypeOf(TCPMuxProxyConfig{}),
-	consts.STCPProxy:   reflect.TypeOf(STCPProxyConfig{}),
-	consts.XTCPProxy:   reflect.TypeOf(XTCPProxyConfig{}),
-	consts.SUDPProxy:   reflect.TypeOf(SUDPProxyConfig{}),
+type ProxyType string
+
+const (
+	ProxyTypeTCP    ProxyType = "tcp"
+	ProxyTypeUDP    ProxyType = "udp"
+	ProxyTypeTCPMUX ProxyType = "tcpmux"
+	ProxyTypeHTTP   ProxyType = "http"
+	ProxyTypeHTTPS  ProxyType = "https"
+	ProxyTypeSTCP   ProxyType = "stcp"
+	ProxyTypeXTCP   ProxyType = "xtcp"
+	ProxyTypeSUDP   ProxyType = "sudp"
+)
+
+var proxyConfigTypeMap = map[ProxyType]reflect.Type{
+	ProxyTypeTCP:    reflect.TypeOf(TCPProxyConfig{}),
+	ProxyTypeUDP:    reflect.TypeOf(UDPProxyConfig{}),
+	ProxyTypeHTTP:   reflect.TypeOf(HTTPProxyConfig{}),
+	ProxyTypeHTTPS:  reflect.TypeOf(HTTPSProxyConfig{}),
+	ProxyTypeTCPMUX: reflect.TypeOf(TCPMuxProxyConfig{}),
+	ProxyTypeSTCP:   reflect.TypeOf(STCPProxyConfig{}),
+	ProxyTypeXTCP:   reflect.TypeOf(XTCPProxyConfig{}),
+	ProxyTypeSUDP:   reflect.TypeOf(SUDPProxyConfig{}),
 }
 
-func NewProxyConfigurerByType(proxyType string) ProxyConfigurer {
+func NewProxyConfigurerByType(proxyType ProxyType) ProxyConfigurer {
 	v, ok := proxyConfigTypeMap[proxyType]
 	if !ok {
 		return nil
 	}
-	return reflect.New(v).Interface().(ProxyConfigurer)
+	pc := reflect.New(v).Interface().(ProxyConfigurer)
+	pc.GetBaseConfig().Type = string(proxyType)
+	return pc
 }
 
 var _ ProxyConfigurer = &TCPProxyConfig{}
@@ -266,7 +285,7 @@ type HTTPProxyConfig struct {
 	HTTPPassword      string           `json:"httpPassword,omitempty"`
 	HostHeaderRewrite string           `json:"hostHeaderRewrite,omitempty"`
 	RequestHeaders    HeaderOperations `json:"requestHeaders,omitempty"`
-	RouteByHTTPUser   string           `json:"routeByHttpUser,omitempty"`
+	RouteByHTTPUser   string           `json:"routeByHTTPUser,omitempty"`
 }
 
 func (c *HTTPProxyConfig) MarshalToMsg(m *msg.NewProxy) {
@@ -316,6 +335,12 @@ func (c *HTTPSProxyConfig) UnmarshalFromMsg(m *msg.NewProxy) {
 	c.SubDomain = m.SubDomain
 }
 
+type TCPMultiplexerType string
+
+const (
+	TCPMultiplexerHTTPConnect TCPMultiplexerType = "httpconnect"
+)
+
 var _ ProxyConfigurer = &TCPMuxProxyConfig{}
 
 type TCPMuxProxyConfig struct {
@@ -324,7 +349,7 @@ type TCPMuxProxyConfig struct {
 
 	HTTPUser        string `json:"httpUser,omitempty"`
 	HTTPPassword    string `json:"httpPassword,omitempty"`
-	RouteByHTTPUser string `json:"routeByHttpUser,omitempty"`
+	RouteByHTTPUser string `json:"routeByHTTPUser,omitempty"`
 	Multiplexer     string `json:"multiplexer,omitempty"`
 }
 

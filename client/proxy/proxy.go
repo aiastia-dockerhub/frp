@@ -15,7 +15,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"net"
@@ -48,10 +47,9 @@ func RegisterProxyFactory(proxyConfType reflect.Type, factory func(*BaseProxy, v
 // Proxy defines how to handle work connections for different proxy type.
 type Proxy interface {
 	Run() error
-
 	// InWorkConn accept work connections registered to server.
 	InWorkConn(net.Conn, *msg.StartWorkConn)
-
+	SetInWorkConnCallback(func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) /* continue */ bool)
 	Close()
 }
 
@@ -90,7 +88,8 @@ type BaseProxy struct {
 	limiter        *rate.Limiter
 	// proxyPlugin is used to handle connections instead of dialing to local service.
 	// It's only validate for TCP protocol now.
-	proxyPlugin plugin.Plugin
+	proxyPlugin        plugin.Plugin
+	inWorkConnCallback func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) /* continue */ bool
 
 	mu  sync.RWMutex
 	xl  *xlog.Logger
@@ -114,7 +113,16 @@ func (pxy *BaseProxy) Close() {
 	}
 }
 
+func (pxy *BaseProxy) SetInWorkConnCallback(cb func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) bool) {
+	pxy.inWorkConnCallback = cb
+}
+
 func (pxy *BaseProxy) InWorkConn(conn net.Conn, m *msg.StartWorkConn) {
+	if pxy.inWorkConnCallback != nil {
+		if !pxy.inWorkConnCallback(pxy.baseCfg, conn, m) {
+			return
+		}
+	}
 	pxy.HandleTCPWorkConnection(conn, m, []byte(pxy.clientCfg.Auth.Token))
 }
 
@@ -133,7 +141,7 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 		})
 	}
 
-	xl.Trace("handle tcp work connection, use_encryption: %t, use_compression: %t",
+	xl.Trace("handle tcp work connection, useEncryption: %t, useCompression: %t",
 		baseCfg.Transport.UseEncryption, baseCfg.Transport.UseCompression)
 	if baseCfg.Transport.UseEncryption {
 		remote, err = libio.WithEncryption(remote, encKey)
@@ -149,7 +157,7 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 	}
 
 	// check if we need to send proxy protocol info
-	var extraInfo []byte
+	var extraInfo plugin.ExtraInfo
 	if baseCfg.Transport.ProxyProtocolVersion != "" {
 		if m.SrcAddr != "" && m.SrcPort != 0 {
 			if m.DstAddr == "" {
@@ -175,16 +183,14 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 				h.Version = 2
 			}
 
-			buf := bytes.NewBuffer(nil)
-			_, _ = h.WriteTo(buf)
-			extraInfo = buf.Bytes()
+			extraInfo.ProxyProtocolHeader = h
 		}
 	}
 
 	if pxy.proxyPlugin != nil {
 		// if plugin is set, let plugin handle connection first
 		xl.Debug("handle by plugin: %s", pxy.proxyPlugin.Name())
-		pxy.proxyPlugin.Handle(remote, workConn, extraInfo)
+		pxy.proxyPlugin.Handle(remote, workConn, &extraInfo)
 		xl.Debug("handle by plugin finished")
 		return
 	}
@@ -202,10 +208,10 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 	xl.Debug("join connections, localConn(l[%s] r[%s]) workConn(l[%s] r[%s])", localConn.LocalAddr().String(),
 		localConn.RemoteAddr().String(), workConn.LocalAddr().String(), workConn.RemoteAddr().String())
 
-	if len(extraInfo) > 0 {
-		if _, err := localConn.Write(extraInfo); err != nil {
+	if extraInfo.ProxyProtocolHeader != nil {
+		if _, err := extraInfo.ProxyProtocolHeader.WriteTo(localConn); err != nil {
 			workConn.Close()
-			xl.Error("write extraInfo to local conn error: %v", err)
+			xl.Error("write proxy protocol header to local conn error: %v", err)
 			return
 		}
 	}

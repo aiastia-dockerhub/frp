@@ -32,7 +32,7 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/server"
 	"github.com/fatedier/frp/pkg/util/limit"
-	utilnet "github.com/fatedier/frp/pkg/util/net"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/server/controller"
 	"github.com/fatedier/frp/server/metrics"
@@ -130,7 +130,7 @@ func (pxy *BaseProxy) GetWorkConnFromPool(src, dst net.Addr) (workConn net.Conn,
 		}
 		xl.Debug("get a new work connection: [%s]", workConn.RemoteAddr().String())
 		xl.Spawn().AppendPrefix(pxy.GetName())
-		workConn = utilnet.NewContextConn(pxy.ctx, workConn)
+		workConn = netpkg.NewContextConn(pxy.ctx, workConn)
 
 		var (
 			srcAddr    string
@@ -271,9 +271,18 @@ func (pxy *BaseProxy) handleUserTCPConnection(userConn net.Conn) {
 	xl.Debug("join connections closed")
 }
 
-func NewProxy(ctx context.Context, userInfo plugin.UserInfo, rc *controller.ResourceController, poolCount int,
-	getWorkConnFn GetWorkConnFn, configurer v1.ProxyConfigurer, serverCfg *v1.ServerConfig, loginMsg *msg.Login,
-) (pxy Proxy, err error) {
+type Options struct {
+	UserInfo           plugin.UserInfo
+	LoginMsg           *msg.Login
+	PoolCount          int
+	ResourceController *controller.ResourceController
+	GetWorkConnFn      GetWorkConnFn
+	Configurer         v1.ProxyConfigurer
+	ServerCfg          *v1.ServerConfig
+}
+
+func NewProxy(ctx context.Context, options *Options) (pxy Proxy, err error) {
+	configurer := options.Configurer
 	xl := xlog.FromContextSafe(ctx).Spawn().AppendPrefix(configurer.GetBaseConfig().Name)
 
 	var limiter *rate.Limiter
@@ -284,16 +293,16 @@ func NewProxy(ctx context.Context, userInfo plugin.UserInfo, rc *controller.Reso
 
 	basePxy := BaseProxy{
 		name:          configurer.GetBaseConfig().Name,
-		rc:            rc,
+		rc:            options.ResourceController,
 		listeners:     make([]net.Listener, 0),
-		poolCount:     poolCount,
-		getWorkConnFn: getWorkConnFn,
-		serverCfg:     serverCfg,
+		poolCount:     options.PoolCount,
+		getWorkConnFn: options.GetWorkConnFn,
+		serverCfg:     options.ServerCfg,
 		limiter:       limiter,
 		xl:            xl,
 		ctx:           xlog.NewContext(ctx, xl),
-		userInfo:      userInfo,
-		loginMsg:      loginMsg,
+		userInfo:      options.UserInfo,
+		loginMsg:      options.LoginMsg,
 		configurer:    configurer,
 	}
 

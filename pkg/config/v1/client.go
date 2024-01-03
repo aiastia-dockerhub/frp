@@ -76,6 +76,7 @@ func (c *ClientCommonConfig) Complete() {
 	c.ServerAddr = util.EmptyOr(c.ServerAddr, "0.0.0.0")
 	c.ServerPort = util.EmptyOr(c.ServerPort, 7000)
 	c.LoginFailExit = util.EmptyOr(c.LoginFailExit, lo.ToPtr(true))
+	c.NatHoleSTUNServer = util.EmptyOr(c.NatHoleSTUNServer, "stun.easyvoip.com:3478")
 
 	c.Auth.Complete()
 	c.Log.Complete()
@@ -110,7 +111,7 @@ type ClientTransportConfig struct {
 	// the server must have TCP multiplexing enabled as well. By default, this
 	// value is true.
 	TCPMux *bool `json:"tcpMux,omitempty"`
-	// TCPMuxKeepaliveInterval specifies the keep alive interval for TCP stream multipler.
+	// TCPMuxKeepaliveInterval specifies the keep alive interval for TCP stream multiplier.
 	// If TCPMux is true, heartbeat of application layer is unnecessary because it can only rely on heartbeat in TCPMux.
 	TCPMuxKeepaliveInterval int64 `json:"tcpMuxKeepaliveInterval,omitempty"`
 	// QUIC protocol options.
@@ -165,10 +166,10 @@ type AuthClientConfig struct {
 	// authenticate frpc with frps. If "token" is specified - token will be
 	// read into login message. If "oidc" is specified - OIDC (Open ID Connect)
 	// token will be issued using OIDC settings. By default, this value is "token".
-	Method string `json:"method,omitempty"`
+	Method AuthMethod `json:"method,omitempty"`
 	// Specify whether to include auth info in additional scope.
 	// Current supported scopes are: "HeartBeats", "NewWorkConns".
-	AdditionalAuthScopes []AuthScope `json:"additionalAuthScopes,omitempty"`
+	AdditionalScopes []AuthScope `json:"additionalScopes,omitempty"`
 	// Token specifies the authorization token used to create keys to be sent
 	// to the server. The server must have a matching token for authorization
 	// to succeed.  By default, this value is "".

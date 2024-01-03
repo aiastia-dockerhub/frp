@@ -15,7 +15,21 @@
 package v1
 
 import (
+	"sync"
+
 	"github.com/fatedier/frp/pkg/util/util"
+)
+
+// TODO(fatedier): Due to the current implementation issue of the go json library, the UnmarshalJSON method
+// of a custom struct cannot access the DisallowUnknownFields parameter of the parent decoder.
+// Here, a global variable is temporarily used to control whether unknown fields are allowed.
+// Once the v2 version is implemented by the community, we can switch to a standardized approach.
+//
+// https://github.com/golang/go/issues/41144
+// https://github.com/golang/go/discussions/63397
+var (
+	DisallowUnknownFields   = false
+	DisallowUnknownFieldsMu sync.Mutex
 )
 
 type AuthScope string
@@ -25,11 +39,18 @@ const (
 	AuthScopeNewWorkConns AuthScope = "NewWorkConns"
 )
 
+type AuthMethod string
+
+const (
+	AuthMethodToken AuthMethod = "token"
+	AuthMethodOIDC  AuthMethod = "oidc"
+)
+
 // QUIC protocol options
 type QUICOptions struct {
-	KeepalivePeriod    int `json:"quicKeepalivePeriod,omitempty" validate:"gte=0"`
-	MaxIdleTimeout     int `json:"quicMaxIdleTimeout,omitempty" validate:"gte=0"`
-	MaxIncomingStreams int `json:"quicMaxIncomingStreams,omitempty" validate:"gte=0"`
+	KeepalivePeriod    int `json:"keepalivePeriod,omitempty"`
+	MaxIdleTimeout     int `json:"maxIdleTimeout,omitempty"`
+	MaxIncomingStreams int `json:"maxIncomingStreams,omitempty"`
 }
 
 func (c *QUICOptions) Complete() {
@@ -76,7 +97,7 @@ type TLSConfig struct {
 }
 
 type LogConfig struct {
-	// This is destination where frp should wirte the logs.
+	// This is destination where frp should write the logs.
 	// If "console" is used, logs will be printed to stdout, otherwise,
 	// logs will be written to the specified file.
 	// By default, this value is "console".
@@ -102,7 +123,7 @@ type HTTPPluginOptions struct {
 	Addr      string   `json:"addr"`
 	Path      string   `json:"path"`
 	Ops       []string `json:"ops"`
-	TLSVerify bool     `json:"tls_verify,omitempty"`
+	TLSVerify bool     `json:"tlsVerify,omitempty"`
 }
 
 type HeaderOperations struct {

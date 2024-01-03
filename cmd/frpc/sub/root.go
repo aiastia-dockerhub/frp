@@ -18,16 +18,13 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 
 	"github.com/fatedier/frp/client"
@@ -39,63 +36,17 @@ import (
 )
 
 var (
-	cfgFile     string
-	cfgDir      string
-	showVersion bool
-
-	serverAddr      string
-	user            string
-	protocol        string
-	token           string
-	logLevel        string
-	logFile         string
-	logMaxDays      int
-	disableLogColor bool
-	dnsServer       string
-
-	proxyName          string
-	localIP            string
-	localPort          int
-	remotePort         int
-	useEncryption      bool
-	useCompression     bool
-	bandwidthLimit     string
-	bandwidthLimitMode string
-	customDomains      string
-	subDomain          string
-	httpUser           string
-	httpPwd            string
-	locations          string
-	hostHeaderRewrite  string
-	role               string
-	sk                 string
-	multiplexer        string
-	serverName         string
-	bindAddr           string
-	bindPort           int
-
-	tlsEnable     bool
-	tlsServerName string
+	cfgFile          string
+	cfgDir           string
+	showVersion      bool
+	strictConfigMode bool
 )
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "./frpc.ini", "config file of frpc")
 	rootCmd.PersistentFlags().StringVarP(&cfgDir, "config_dir", "", "", "config directory, run one frpc service for each file in config directory")
 	rootCmd.PersistentFlags().BoolVarP(&showVersion, "version", "v", false, "version of frpc")
-}
-
-func RegisterCommonFlags(cmd *cobra.Command) {
-	cmd.PersistentFlags().StringVarP(&serverAddr, "server_addr", "s", "127.0.0.1:7000", "frp server's address")
-	cmd.PersistentFlags().StringVarP(&user, "user", "u", "", "user")
-	cmd.PersistentFlags().StringVarP(&protocol, "protocol", "p", "tcp", "tcp, kcp, quic, websocket, wss")
-	cmd.PersistentFlags().StringVarP(&token, "token", "t", "", "auth token")
-	cmd.PersistentFlags().StringVarP(&logLevel, "log_level", "", "info", "log level")
-	cmd.PersistentFlags().StringVarP(&logFile, "log_file", "", "console", "console or file path")
-	cmd.PersistentFlags().IntVarP(&logMaxDays, "log_max_days", "", 3, "log file reversed days")
-	cmd.PersistentFlags().BoolVarP(&disableLogColor, "disable_log_color", "", false, "disable log color in console")
-	cmd.PersistentFlags().BoolVarP(&tlsEnable, "tls_enable", "", true, "enable frpc tls")
-	cmd.PersistentFlags().StringVarP(&tlsServerName, "tls_server_name", "", "", "specify the custom server name of tls certificate")
-	cmd.PersistentFlags().StringVarP(&dnsServer, "dns_server", "", "", "specify dns server instead of using system default one")
+	rootCmd.PersistentFlags().BoolVarP(&strictConfigMode, "strict_config", "", false, "strict config parsing mode, unknown fields will cause an error")
 }
 
 var rootCmd = &cobra.Command{
@@ -117,6 +68,7 @@ var rootCmd = &cobra.Command{
 		// Do not show command usage here.
 		err := runClient(cfgFile)
 		if err != nil {
+			fmt.Println(err)
 			os.Exit(1)
 		}
 		return nil
@@ -145,6 +97,7 @@ func runMultipleClients(cfgDir string) error {
 }
 
 func Execute() {
+	rootCmd.SetGlobalNormalizationFunc(config.WordSepNormalizeFunc)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -157,49 +110,9 @@ func handleTermSignal(svr *client.Service) {
 	svr.GracefulClose(500 * time.Millisecond)
 }
 
-func parseClientCommonCfgFromCmd() (*v1.ClientCommonConfig, error) {
-	cfg := &v1.ClientCommonConfig{}
-
-	ipStr, portStr, err := net.SplitHostPort(serverAddr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid server_addr: %v", err)
-	}
-
-	cfg.ServerAddr = ipStr
-	cfg.ServerPort, err = strconv.Atoi(portStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid server_addr: %v", err)
-	}
-
-	cfg.User = user
-	cfg.Transport.Protocol = protocol
-	cfg.Log.Level = logLevel
-	cfg.Log.To = logFile
-	cfg.Log.MaxDays = int64(logMaxDays)
-	cfg.Log.DisablePrintColor = disableLogColor
-	cfg.DNSServer = dnsServer
-
-	// Only token authentication is supported in cmd mode
-	cfg.Auth.Token = token
-	cfg.Transport.TLS.Enable = lo.ToPtr(tlsEnable)
-	cfg.Transport.TLS.ServerName = tlsServerName
-
-	cfg.Complete()
-
-	err, warning := validation.ValidateClientCommonConfig(cfg)
-	if warning != nil {
-		fmt.Printf("WARNING: %v\n", warning)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("parse config error: %v", err)
-	}
-	return cfg, nil
-}
-
 func runClient(cfgFilePath string) error {
-	cfg, pxyCfgs, visitorCfgs, isLegacyFormat, err := config.LoadClientConfig(cfgFilePath)
+	cfg, proxyCfgs, visitorCfgs, isLegacyFormat, err := config.LoadClientConfig(cfgFilePath, strictConfigMode)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	if isLegacyFormat {
@@ -207,19 +120,19 @@ func runClient(cfgFilePath string) error {
 			"please use yaml/json/toml format instead!\n")
 	}
 
-	warning, err := validation.ValidateAllClientConfig(cfg, pxyCfgs, visitorCfgs)
+	warning, err := validation.ValidateAllClientConfig(cfg, proxyCfgs, visitorCfgs)
 	if warning != nil {
 		fmt.Printf("WARNING: %v\n", warning)
 	}
 	if err != nil {
 		return err
 	}
-	return startService(cfg, pxyCfgs, visitorCfgs, cfgFilePath)
+	return startService(cfg, proxyCfgs, visitorCfgs, cfgFilePath)
 }
 
 func startService(
 	cfg *v1.ClientCommonConfig,
-	pxyCfgs []v1.ProxyConfigurer,
+	proxyCfgs []v1.ProxyConfigurer,
 	visitorCfgs []v1.VisitorConfigurer,
 	cfgFile string,
 ) error {
@@ -229,7 +142,12 @@ func startService(
 		log.Info("start frpc service for config file [%s]", cfgFile)
 		defer log.Info("frpc service for config file [%s] stopped", cfgFile)
 	}
-	svr, err := client.NewService(cfg, pxyCfgs, visitorCfgs, cfgFile)
+	svr, err := client.NewService(client.ServiceOptions{
+		Common:         cfg,
+		ProxyCfgs:      proxyCfgs,
+		VisitorCfgs:    visitorCfgs,
+		ConfigFilePath: cfgFile,
+	})
 	if err != nil {
 		return err
 	}
@@ -239,7 +157,5 @@ func startService(
 	if shouldGracefulClose {
 		go handleTermSignal(svr)
 	}
-
-	_ = svr.Run(context.Background())
-	return nil
+	return svr.Run(context.Background())
 }
