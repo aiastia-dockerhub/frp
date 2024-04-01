@@ -97,6 +97,9 @@ type HealthCheckConfig struct {
 	// Path specifies the path to send health checks to if the
 	// health check type is "http".
 	Path string `json:"path,omitempty"`
+	// HTTPHeaders specifies the headers to send with the health request, if
+	// the health check type is "http".
+	HTTPHeaders []HTTPHeader `json:"httpHeaders,omitempty"`
 }
 
 type DomainConfig struct {
@@ -186,7 +189,7 @@ func (c *TypedProxyConfig) UnmarshalJSON(b []byte) error {
 		decoder.DisallowUnknownFields()
 	}
 	if err := decoder.Decode(configurer); err != nil {
-		return err
+		return fmt.Errorf("unmarshal ProxyConfig error: %v", err)
 	}
 	c.ProxyConfigurer = configurer
 	return nil
