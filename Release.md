@@ -1,3 +1,3 @@
-### Features
+### Bug Fixes
 
-* Support metadatas and annotations in frpc proxy commands.
+*   **VirtualNet:** Resolved various issues related to connection handling, TUN device management, and stability in the virtual network feature.
