@@ -40,4 +40,5 @@ client.key
 # Cache
 *.swp
 
-.github/
+# AI
+CLAUDE.md
